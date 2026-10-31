@@ -29,6 +29,29 @@ namespace DeskOrder.Core
 
         public static bool IsFallback { get { return !string.IsNullOrEmpty(FallbackNote); } }
 
+        /// <summary>
+        /// Path with the well-known folders shortened to %USERPROFILE% style tokens. The UI
+        /// shows this instead of the raw path: it is shorter to read and keeps the user's
+        /// account name out of screenshots and support posts.
+        /// </summary>
+        public static string Display(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            string result = path;
+            result = Shorten(result, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "%LOCALAPPDATA%");
+            result = Shorten(result, Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "%APPDATA%");
+            string temp = Path.GetTempPath();
+            if (!string.IsNullOrEmpty(temp)) result = Shorten(result, temp.TrimEnd('\\'), "%TEMP%");
+            result = Shorten(result, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "%USERPROFILE%");
+            return result;
+        }
+
+        private static string Shorten(string text, string folder, string token)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(folder)) return text;
+            return text.Replace(folder, token);
+        }
+
         /// <summary>Name of the marker next to the exe that turns on portable mode.</summary>
         public const string PortableMarker = "portable.txt";
 

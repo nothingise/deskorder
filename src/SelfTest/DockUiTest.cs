@@ -27,6 +27,13 @@ namespace DeskOrder.SelfTest
             var app = new Application();
             app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             string orderJson = "";
+
+            // This test replaces the Dock contents to have a known list to click through.
+            // Snapshots the data directory first so running it against a real profile
+            // cannot destroy the user's pins (which is exactly what it used to do).
+            Dictionary<string, byte[]> snapshot = SnapshotJson(AppPaths.Root);
+            string testDir = Path.Combine(AppPaths.Root, "dock-ui-test");
+            bool testDirExisted = Directory.Exists(testDir);
             try
             {
                 AppSettings settings = SettingsStore.Load();
@@ -37,7 +44,7 @@ namespace DeskOrder.SelfTest
 
                 foreach (DockPin p in host.Dock.Pins) host.Dock.Remove(p.Id, false);
 
-                string dir = Path.Combine(AppPaths.Root, "dock-ui-test");
+                string dir = testDir;
                 Directory.CreateDirectory(dir);
                 string alpha = MakeFile(dir, "DockTest Alpha.txt");
                 string bravo = MakeFile(dir, "DockTest Bravo.txt");
@@ -163,6 +170,14 @@ namespace DeskOrder.SelfTest
                 Check("harness", false, ex.GetType().Name + ": " + ex.Message);
                 Log.Error("dock-ui-test harness failed", ex);
             }
+            finally
+            {
+                RestoreSnapshot(snapshot);
+                if (!testDirExisted)
+                {
+                    try { if (Directory.Exists(testDir)) Directory.Delete(testDir, true); } catch { }
+                }
+            }
 
             int failed = 0;
             var sb = new StringBuilder();
@@ -196,6 +211,41 @@ namespace DeskOrder.SelfTest
             string path = Path.Combine(dir, name);
             File.WriteAllText(path, "dock test");
             return path;
+        }
+
+        /// <summary>Reads every *.json directly under the data root into memory.</summary>
+        private static Dictionary<string, byte[]> SnapshotJson(string root)
+        {
+            var snapshot = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (!Directory.Exists(root)) return snapshot;
+                foreach (string file in Directory.GetFiles(root, "*.json")) snapshot[file] = File.ReadAllBytes(file);
+            }
+            catch (Exception ex) { Log.Warn("dock-ui-test snapshot: " + ex.Message); }
+            return snapshot;
+        }
+
+        private static void RestoreSnapshot(Dictionary<string, byte[]> snapshot)
+        {
+            try
+            {
+                foreach (KeyValuePair<string, byte[]> entry in snapshot)
+                {
+                    try { File.WriteAllBytes(entry.Key, entry.Value); }
+                    catch (Exception ex) { Log.Error("dock-ui-test restore " + entry.Key, ex); }
+                }
+                // A file that did not exist before the test must not survive it either.
+                foreach (string file in Directory.GetFiles(AppPaths.Root, "*.json"))
+                {
+                    if (!snapshot.ContainsKey(file) && Path.GetFileName(file) == "dock-ui-test.json")
+                    {
+                        try { File.Delete(file); } catch { }
+                    }
+                }
+                Log.Info("dock-ui-test restored " + snapshot.Count + " data file(s)");
+            }
+            catch (Exception ex) { Log.Error("dock-ui-test restore", ex); }
         }
 
         private static void Layout(Window window)

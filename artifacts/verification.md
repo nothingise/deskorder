@@ -331,6 +331,53 @@ release\
 
 `git clone` 在本会话不可用：本地克隆会让 git 走 `sh.exe`，而沙箱禁止创建命名管道（`fatal error - couldn't create signal pipe, Win32 error 5`）。改用 `git archive HEAD` 导出同样内容后完成“干净目录能否构建”的验证。真正的 `clone`/`push` 在普通会话里不受影响。
 
-## 13. 结论
+## 13. 开机自启失效（第二轮修复）
 
-Dock 的外层透明框、显示后落到任务栏下面、点击链路、桌面透明律动条（含 0–160 px 距 Dock 滑条与全屏自动隐藏）、快捷方式启动逻辑、**Dock 整理删除/移动/添加失效**、**便携模式与可分发压缩包**，以及本轮的**脱敏入库**均已完成并实测。三轮的关键发现依次是：受限会话中配置目录不可写会把保存异常留在 UI 刷新之前（所有 Dock 编辑看起来“没反应”）；ZIP 内中文文件名依赖 UTF-8 标志位、显式传 `UTF8Encoding` 反而写出乱码；入库前必须先脱敏（本机路径、软件名、设备 GUID、含真实桌面的截图）。Store/UWP 激活与任务栏透明受当前 Low Integrity 会话限制，未做最终确认；沉浸模式作为任务栏替代已加入。
+### 13.1 现象与根因
+
+用户报告「不能开机自启」：设置页的开关点下去只会弹「无法修改开机启动项」，重启后也没有自动启动。证据链三条：
+
+1. `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下根本没有 `DeskOrder` 值，`settings.json` 里 `General.Startup=false`；
+2. `app.log` 在 17:28–17:29 记录 7 条 `Startup toggle failed :: UnauthorizedAccessException: 对注册表项 HKCU\...\Run 的访问被拒绝`，堆栈指向 `StartupService.SetEnabled`；
+3. 在会话里复现同一拒绝，`GetTokenInformation` 显示本会话进程是 **Low 完整性 + 写受限令牌**（该键的 ACL 只给 `NT AUTHORITY\RESTRICTED` 一个 `ReadKey`）；用户此前用的实例（PID 39416）则是 **Low 完整性、无限制 SID**。低完整性进程写中完整性安全等级的注册表键会被强制完整性策略直接拒绝。
+
+原实现只有一条路径（Run 项），失败时只回滚开关并弹一句没有原因的提示，所以既没有退路、也看不出原因；`IsEnabled()` 也只看 Run 值，不知道 Windows「启动应用」页写下的禁用标记（`StartupApproved\Run`）。
+
+### 13.2 修复
+
+| 位置 | 改动 |
+|---|---|
+| `src\Core\StartupService.cs` | 三级登记：注册表 Run 项 → 当前用户「启动」文件夹快捷方式 → 登录计划任务（`schtasks /SC ONLOGON /TN DeskOrder`）；成功一种就停，并清掉另外两处避免重复登记；每一层的具体异常都保留，不会只说「失败」 |
+| 同上 | `Status()`：机制、实际命令、是否指向旧路径（stale）、是否被系统关掉（`StartupApproved\Run` 低位）、注册表是否可写、进程完整性级别、失败原因，以及可直接粘贴的 `manualCommand` |
+| 同上 | `RefreshIfEnabled()`：程序换目录/改名后，下次启动自动把登记项里的路径改成当前 exe |
+| `src\Interop\ProcessIntegrity.cs` | 新增：读自身令牌的完整性级别（Untrusted/Low/Medium/High），用于给出可执行的失败原因 |
+| `src\Interop\ShortcutResolver.cs` | 新增 `Create()`：写 .lnk，供「启动」文件夹退路使用 |
+| `src\UI\SettingsPage.cs` | 开关下方增加**状态行**（当前机制 / 旧路径 / 被系统关闭 / 失败原因）与「重新登记」「复制启动命令」两个按钮；开关状态改由登记项实际状态决定 |
+| `src\Core\AppPaths.cs` | 新增 `Display()`：界面里的路径按 `%USERPROFILE%` / `%APPDATA%` 打码，既好读，也不会把账号名带进截图 |
+| `src\Program.cs` | 新增 `--startup status\|on\|off\|repair\|command`；启动时日志写一行 `autostart ...`，开机后可直接从日志核对 |
+
+### 13.3 实测
+
+- 登记结果：`HKCU\...\Run\DeskOrder` = `"C:\...\dist\桌序.exe" --tray`，`StartupApproved\Run` 无禁用项。
+- 用 `桌序.exe` 运行时 `--startup status` 输出 `enabled: true / mechanism: 注册表 Run 键 / osDisabled: false / stale: false`；用副本 `DeskOrder.exe` 运行同一命令则报告 `stale: true` 并给出应为的路径，说明「指向旧路径」也能被发现。
+- 受限会话里同一命令输出 `runKeyWritable: false / integrity: 低完整性（Low） / problem: 登记的是旧路径…`，退出码 1——「失败必须说明原因」的契约成立。
+- `--self-test` **24/24**（新增 6 例：启动命令行、`StartupApproved` 字节解析、启动快捷方式往返、开关失败必给原因、启动状态可读、界面路径打码）；`--dock-ui-test` **22/22**。
+- 未能在此会话完成的验证：真正的注销/重启触发（需要普通会话重启一次），以及未签名程序在启动项里的 SmartScreen 行为。
+
+### 13.4 顺带修掉一处数据破坏（由我的测试造成）
+
+`--dock-ui-test` 会清空并重建 Dock 固定项，而这台机器的数据目录就是真实目录（`%APPDATA%` 在受限会话不可写），所以一次测试把用户的 `pins.json`（9 个固定项）覆盖成了测试项。处理：
+
+- 按日志证据重建 `pins.json`：共 9 条，逐条都能在 `app.log` 里找到痕迹——6 条来自 `Dock click pin=` 记录，1 条来自 17:23:55 的拖拽重排记录，1 条来自「拖入 Dock」后的点击记录，1 条是 Steam 目录下的游戏程序；每条路径都先核对当前磁盘确实存在再写入。具体名称属使用者隐私，不在此列出。
+- `DockUiTest.Run` 现在**先快照数据目录下所有 `*.json`，结束时还原**，并清理自己创建的 `dock-ui-test\` 临时目录。
+- 实测：对真实数据目录再跑一次 `--dock-ui-test`，`pins.json` 的 SHA256 前后完全一致（`DF70BADA335E24268107A2B2ED6B5527C0125007A5F8AE405C8C8DBDFA8D7985`），日志出现 `dock-ui-test restored 4 data file(s)`，22/22 仍全通过。
+
+诚实说明：旧列表无法 100% 还原——被覆盖前的文件是 2184 字节，按每条约 200–235 字节推算比这 9 条多 1 条左右；日志里 5 次「拖入 Dock」没有记录被拖文件的路径，所以可能少 1–2 个当时拖进去的程序（例如从 Steam 直接拖的 exe）。用户可在「Dock 整理」页两下补上。
+
+## 14. 结论
+
+Dock 的外层透明框、显示后落到任务栏下面、点击链路、桌面透明律动条（含 0–160 px 距 Dock 滑条与全屏自动隐藏）、快捷方式启动逻辑、**Dock 整理删除/移动/添加失效**、**便携模式与可分发压缩包**，以及**脱敏入库**均已完成并实测。三轮的关键发现依次是：受限会话中配置目录不可写会把保存异常留在 UI 刷新之前（所有 Dock 编辑看起来“没反应”）；ZIP 内中文文件名依赖 UTF-8 标志位、显式传 `UTF8Encoding` 反而写出乱码；入库前必须先脱敏（本机路径、软件名、设备 GUID、含真实桌面的截图）。
+
+第四轮（开机自启）的结论：开关失效的根因不在登记代码写错，而在**运行环境**（低完整性/写受限令牌）与**只有一条登记路径且失败不报原因**。现在三级登记 + 完整状态输出把「能不能开机自启」变成一条可自查的记录：`--startup status` 一次就能看出是没登记、指向旧路径、被系统关掉，还是当前环境不允许写注册表。同一轮还修掉了测试工具会覆盖真实 `pins.json` 的问题（改为快照/还原），并已按日志证据恢复用户 Dock。
+
+Store/UWP 激活与任务栏透明受当前 Low Integrity 会话限制，未做最终确认；沉浸模式作为任务栏替代已加入。

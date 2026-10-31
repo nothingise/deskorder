@@ -233,6 +233,93 @@ namespace DeskOrder.SelfTest
                         try { Directory.Delete(portableDir2, true); } catch { }
                     }
                 });
+                Add(cases, "startup-command-line", delegate
+                {
+                    string command = StartupService.CommandLine();
+                    return command.StartsWith("\"") && command.EndsWith("\" --tray") &&
+                           command.IndexOf(StartupService.ExePath(), StringComparison.OrdinalIgnoreCase) > 0;
+                });
+                Add(cases, "startup-approved-flags", delegate
+                {
+                    // StartupApproved\Run uses 0x02 for "on" and 0x03 for "off".
+                    return !StartupService.IsApprovedDisabled(new byte[] { 0x02, 0, 0, 0 }) &&
+                            StartupService.IsApprovedDisabled(new byte[] { 0x03, 0, 0, 0 }) &&
+                            StartupService.IsApprovedDisabled(new byte[] { 0x07, 0, 0, 0 }) &&
+                           !StartupService.IsApprovedDisabled(new byte[] { 0x06, 0, 0, 0 }) &&
+                           !StartupService.IsApprovedDisabled(null);
+                });
+                Add(cases, "startup-shortcut-roundtrip", delegate
+                {
+                    return InSandboxRoot(delegate
+                    {
+                        string startupDir = Path.Combine(AppPaths.Root, "selftest-startup");
+                        Directory.CreateDirectory(startupDir);
+                        string lnk = Path.Combine(startupDir, "DeskOrder.lnk");
+                        string target = StartupService.ExePath();
+                        string previousRun = StartupService.RunKeyOverride;
+                        string previousLnk = StartupService.LnkOverride;
+                        StartupService.RunKeyOverride = @"Software\DeskOrderSelfTest\Run";
+                        StartupService.LnkOverride = lnk;
+                        try
+                        {
+                            if (!ShortcutResolver.Create(lnk, target, "--tray", Path.GetDirectoryName(target))) return false;
+                            string read = StartupService.ReadLnkTarget();
+                            return File.Exists(lnk) && StartupService.IsEnabled() &&
+                                   read.IndexOf(target, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                   read.IndexOf("--tray", StringComparison.OrdinalIgnoreCase) >= 0;
+                        }
+                        finally
+                        {
+                            StartupService.RunKeyOverride = previousRun;
+                            StartupService.LnkOverride = previousLnk;
+                        }
+                    });
+                });
+                Add(cases, "startup-toggle-reports", delegate
+                {
+                    // The switch must either register and be readable back, or explain the
+                    // refusal. It must never look successful while nothing was registered.
+                    string previousRun = StartupService.RunKeyOverride;
+                    string previousLnk = StartupService.LnkOverride;
+                    bool previousTask = StartupService.AllowTaskFallback;
+                    string probeDir = Path.Combine(Path.GetTempPath(), "deskorder-startup-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+                    StartupService.RunKeyOverride = @"Software\DeskOrderSelfTest\Run";
+                    StartupService.LnkOverride = Path.Combine(probeDir, "DeskOrder.lnk");
+                    StartupService.AllowTaskFallback = false;
+                    try
+                    {
+                        StartupOutcome on = StartupService.SetEnabled(true);
+                        if (!on.Ok)
+                            return on.Error.Length > 0 && on.Hint.Length > 0 && !StartupService.IsEnabled();
+                        bool registered = StartupService.IsEnabled();
+                        StartupOutcome off = StartupService.SetEnabled(false);
+                        return registered && off.Ok && !StartupService.IsEnabled();
+                    }
+                    finally
+                    {
+                        StartupService.RunKeyOverride = previousRun;
+                        StartupService.LnkOverride = previousLnk;
+                        StartupService.AllowTaskFallback = previousTask;
+                        try { if (Directory.Exists(probeDir)) Directory.Delete(probeDir, true); } catch { }
+                    }
+                });
+                Add(cases, "startup-status-readable", delegate
+                {
+                    StartupStatus status = StartupService.Status();
+                    return status.Expected.IndexOf("--tray", StringComparison.OrdinalIgnoreCase) > 0 &&
+                           status.Integrity.Length > 0 &&
+                           status.Expected.IndexOf(StartupService.ExePath(), StringComparison.OrdinalIgnoreCase) >= 0;
+                });
+                Add(cases, "apppaths-display-token", delegate
+                {
+                    // UI text must not leak the account name: well-known folders are shown
+                    // as %USERPROFILE% / %APPDATA% tokens instead.
+                    string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    string shown = AppPaths.Display(Path.Combine(home, "Documents", "DeskOrder"));
+                    return shown.IndexOf("%USERPROFILE%", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                           shown.IndexOf(home, StringComparison.OrdinalIgnoreCase) < 0 &&
+                           AppPaths.Display(null) == "";
+                });
                 Add(cases, "defview-found", delegate { return DesktopIcons.FindDefView() != IntPtr.Zero; });                Add(cases, "icon-extraction", delegate
                 {
                     string path = Environment.ExpandEnvironmentVariables(@"%PUBLIC%\Desktop\Microsoft Edge.lnk");

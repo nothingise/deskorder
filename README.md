@@ -140,7 +140,26 @@ Dock 内的拖拽排序还有一个独立缺陷：接收拖放的 `DragEnter` �
 
 - 快捷键可在设置中关闭；被其他程序占用时不会影响其他功能。
 - 关闭主窗口默认最小化到托盘；Dock 继续运行。
-- 可在设置中开启开机启动（写入当前用户的 Run 项）。
+- 可在设置中开启开机启动，见下节。
+
+### 开机启动
+
+设置页的「开机启动桌序」会按下面的顺序登记，成功一个就停：
+
+1. **当前用户注册表 Run 项**（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`）——最标准，能在「任务管理器 → 启动应用」里看到；
+2. **当前用户「启动」文件夹**快捷方式（`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\DeskOrder.lnk`）——注册表被策略或安全软件挡住时的退路；
+3. **登录计划任务**（`schtasks /SC ONLOGON /TN DeskOrder`）——前两条都失败时的退路。
+
+- 三种方式都失败时，设置页会把每一层的原因写出来（含当前进程的完整性级别），托盘提示「无法修改开机启动项」，不会假装成功。
+- 如果登记项被 Windows 自己的「启动应用」开关关掉（`StartupApproved\Run`），状态行会显示「已被 Windows「启动应用」关闭」，点「重新登记」即可恢复。
+- 换了目录、改名或重新解压后，桌序每次启动都会把登记项里的路径刷成当前 exe；发现指向旧路径时设置页会提示，并给出「重新登记」。
+- 当前运行环境不允许写注册表时（低完整性/沙箱会话、受限令牌），用设置页的「复制启动命令」把一行 PowerShell 命令贴到**普通**窗口里执行：
+
+  ```powershell
+  Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'DeskOrder' -Value ('"' + '<exe 路径>' + '" --tray')
+  ```
+
+- 命令行诊断：`桌序.exe --startup status` 打印 `enabled / mechanism / stale / osDisabled / runKeyWritable / integrity / problem`；`--startup on|off|repair` 直接登记、取消或重新登记。
 
 ---
 
@@ -187,7 +206,7 @@ release\
     使用说明.txt                  给使用者的说明
     README.md                     完整功能/设计说明
     SHA256.txt                    校验值
-  DeskOrder-1.0.0-portable.zip    直接发给别人的压缩包（约 323 KB）
+  DeskOrder-1.0.0-portable.zip    直接发给别人的压缩包（约 340 KB）
 ```
 
 打包要点：
@@ -214,7 +233,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 1. 用 `assets\app.ico` 作为应用图标；
 2. 用 `src\app.manifest` 启用 PerMonitorV2 DPI 与普通用户权限；
 3. 以 C# 5 语法编译全部 `src\**\*.cs`；
-4. 生成单文件 exe（约 298 KB）。
+4. 生成单文件 exe（约 314 KB）。
 
 ---
 
@@ -227,6 +246,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 .\dist\DeskOrder.exe --dock-ui-test artifacts\dock-ui-test.json
 .\dist\DeskOrder.exe --dock-save-test artifacts\dock-save-test.json
 .\dist\DeskOrder.exe --data-info --report artifacts\data-info.json
+.\dist\DeskOrder.exe --startup status
+.\dist\DeskOrder.exe --startup repair
 .\dist\DeskOrder.exe --screenshot-ui artifacts\ui-final --size 1240x820
 .\dist\DeskOrder.exe --launch-test "C:\path\to\app.lnk" --report artifacts\launch.json
 ```
@@ -235,6 +256,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - `--dock-ui-test`：**不需要物理鼠标**，直接构造主窗口与 Dock 窗口，用合成事件点击真实的 `↑ ↓ ×`、调用添加/拖放/排序逻辑，并核对 `pins.json` 的落盘顺序。
 - `--dock-save-test`：把配置目录指到一个只读路径，验证“保存失败也不会中断操作，并且会报告原因”。
 - `--data-info`：打印配置目录探测链、是否可写、是否便携模式。
+- `--startup status`：打印开机启动的登记状态（机制、是否指向旧路径、是否被系统关掉、注册表是否可写、当前进程完整性级别、失败原因）；`--startup on|off|repair|command` 直接登记 / 取消 / 重新登记 / 打印启动命令行。
 - `--desktop-dir <目录>`：把桌面扫描指向指定目录（同时忽略公共桌面），用于测试与截图。
 
 仓库里的 `preview/` 截图就是这样重新渲染的：先准备一份中性示例数据目录（`pins.json` 里是记事本/画图/计算器一类系统程序）和一份只有几个假快捷方式的目录，再执行
@@ -243,9 +265,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 当前结果：
 
-- 构建成功，exe 304,640 字节（约 298 KB），`dist\DeskOrder.exe` 与 `dist\桌序.exe` SHA256 一致。
-- 自检 **18/18** 通过：FFT、频段映射、配置规范化、JSON 往返、桌面快捷方式枚举、导入/撤销、Dock 增删改排、配置目录回退、便携模式识别与初始化、拖放效果规则、只读目录下保存失败可上报、DefView、图标提取、任务栏颜色编码。
-- Dock 整理 UI 测试 **22/22** 通过：页面上的移动、删除、添加、重复/缺失文件处理、落盘顺序、拖放效果、Dock 内拖拽排序、文件拖入、空位菜单、按名称整理。
+- 构建成功，exe 321,536 字节（约 314 KB），`dist\DeskOrder.exe` 与 `dist\桌序.exe` SHA256 一致。
+- 自检 **24/24** 通过：FFT、频段映射、配置规范化、JSON 往返、桌面快捷方式枚举、导入/撤销、Dock 增删改排、配置目录回退、便携模式识别与初始化、拖放效果规则、只读目录下保存失败可上报、DefView、图标提取、任务栏颜色编码、开机启动命令行与 `StartupApproved` 解析、启动快捷方式往返、开关失败必给原因、启动状态可读、界面路径打码。
+- Dock 整理 UI 测试 **22/22** 通过：页面上的移动、删除、添加、重复/缺失文件处理、落盘顺序、拖放效果、Dock 内拖拽排序、文件拖入、空位菜单、按名称整理。测试会在开始时快照数据目录、结束时还原，因此对真实配置目录运行也不会破坏用户的 `pins.json`（已用 SHA256 前后比对实测）。
+- 开机启动实测：登记到 `HKCU\...\Run` 的值为 `"<exe>" --tray`，`--startup status` 报告 `enabled: true / mechanism: 注册表 Run 键 / osDisabled: false`；在低完整性会话里同一命令报告 `runKeyWritable: false`、`problem` 说明原因（这正是之前开关「点了没反应」的原因）。
 - 只读配置目录实测：`threw: false`、`opsSurvived: true`、`saveErrorReported: DirectoryNotFoundException...`。
 - 发布包实测：解压后直接运行 `DeskOrder.exe`，`portable: true`、数据落在同目录 `DeskOrderData`，`ERROR=0 WARN=0`，无多余提示；压缩包内 `桌序.exe` / `使用说明.txt` 解压后文件名正常。
 - 本地播放器：WAV 播放成功，进度 0.576 s，循环/暂停/跳转链路正常。
@@ -271,6 +294,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - 任务栏透明在 26H2 上可能被系统直接拒绝；沉浸模式是替代方案，不是真正的透明。
 - 不支持按单个图标隐藏，只提供“全部图标”开关。
 - 当前没有自动更新、安装包、签名和英文界面。
+- 开机启动需要**至少中等完整性**的普通用户会话：低完整性/沙箱进程写的注册表与被 Windows 拒绝，此时设置页会给出原因与「复制启动命令」的手动方案，而不是静默失败。
 - 当前构建会话为 Low Integrity，系统级桌面/任务栏写操作在验证时被拒绝；普通用户会话的完整验证步骤见报告。
 
 ---

@@ -392,7 +392,7 @@ namespace DeskOrder.UI
             string save = App.Dock.LastSaveError;
             if (!string.IsNullOrEmpty(save))
             {
-                App.NotifyOnce("dock-save-page", "改动已生效，但无法保存到 " + AppPaths.Root + "：" + save, true);
+                App.NotifyOnce("dock-save-page", "改动已生效，但无法保存到 " + AppPaths.Display(AppPaths.Root) + "：" + save, true);
             }
             else if (!string.IsNullOrEmpty(message))
             {

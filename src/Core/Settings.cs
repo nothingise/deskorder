@@ -176,9 +176,12 @@ namespace DeskOrder.Core
         public bool HideDesktopIcons { get; set; }
         public bool FirstRun { get; set; }
         public bool ReduceMotion { get; set; }
+        /// <summary>Which autostart mechanism was registered last (StartupKind name).</summary>
+        public string StartupMechanism { get; set; }
 
         public GeneralSettings()
         {
+            StartupMechanism = "";
             Startup = false;
             CloseToTray = true;
             HotkeyDock = true;

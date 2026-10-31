@@ -46,6 +46,10 @@ namespace DeskOrder
             {
                 return DataInfo(Value(opts, "report"));
             }
+            if (Has(opts, "startup"))
+            {
+                return StartupCli(Value(opts, "startup"));
+            }
             if (Has(opts, "dock-ui-test"))
             {
                 string report = Value(opts, "dock-ui-test");
@@ -146,6 +150,17 @@ namespace DeskOrder
 
             var host = new DeskOrderApp(app, settings, false);
             StartupService.RefreshIfEnabled();
+            StartupStatus startupNow = StartupService.Status();
+            Log.Info("autostart " + StartupService.StatusLine());
+            if (settings.General.Startup != startupNow.Enabled ||
+                (startupNow.Enabled && settings.General.StartupMechanism.Length == 0))
+            {
+                // Keep the stored flag honest: it is the registry/shortcut that decides,
+                // not what the user clicked last time.
+                settings.General.Startup = startupNow.Enabled;
+                settings.General.StartupMechanism = startupNow.Enabled ? startupNow.Kind.ToString() : "";
+                SettingsStore.Save(settings);
+            }
             host.Start(Has(opts, "tray"));
             ThreadPool.RegisterWaitForSingleObject(_activate, delegate
             {
@@ -157,6 +172,49 @@ namespace DeskOrder
                 GC.KeepAlive(_mutex);
                 GC.KeepAlive(_activate);
             }
+        }
+
+        /// <summary>
+        /// Autostart registration from the command line: status | on | off | repair | command.
+        /// Same code path the settings switch uses, so a report here explains what the UI
+        /// would do - including the reason Windows refused the write.
+        /// </summary>
+        private static int StartupCli(string action)
+        {
+            if (string.IsNullOrEmpty(action)) action = "status";
+            action = action.ToLowerInvariant();
+            if (action == "command")
+            {
+                Console.WriteLine(StartupService.CommandLine());
+                return 0;
+            }
+            if (action == "on" || action == "enable" || action == "off" || action == "disable" || action == "repair")
+            {
+                bool enabled = action != "off" && action != "disable";
+                StartupOutcome outcome = StartupService.SetEnabled(enabled);
+                Console.WriteLine("{\n  \"action\": \"" + Escape(action) + "\",\n  \"ok\": " +
+                                  (outcome.Ok ? "true" : "false") + ",\n  \"mechanism\": \"" + Escape(outcome.Mechanism) +
+                                  "\",\n  \"error\": \"" + Escape(outcome.Error) + "\",\n  \"hint\": \"" + Escape(outcome.Hint) +
+                                  "\"\n}");
+                Log.Info("startup-cli action=" + action + " ok=" + outcome.Ok + " mechanism=" + outcome.Mechanism +
+                         " error=" + outcome.Error);
+                return outcome.Ok ? 0 : 1;
+            }
+
+            StartupStatus status = StartupService.Status();
+            Console.WriteLine("{\n  \"enabled\": " + (status.Enabled ? "true" : "false") +
+                              ",\n  \"mechanism\": \"" + Escape(status.Mechanism) +
+                              "\",\n  \"command\": \"" + Escape(status.Command) +
+                              "\",\n  \"expected\": \"" + Escape(status.Expected) +
+                              "\",\n  \"stale\": " + (status.Stale ? "true" : "false") +
+                              ",\n  \"osDisabled\": " + (status.OsDisabled ? "true" : "false") +
+                              ",\n  \"runKeyWritable\": " + (status.RunKeyWritable ? "true" : "false") +
+                              ",\n  \"integrity\": \"" + Escape(status.Integrity) +
+                              "\",\n  \"problem\": \"" + Escape(status.Problem) +
+                              "\",\n  \"manualCommand\": \"" + Escape(StartupService.ManualCommand()) +
+                              "\"\n}");
+            Log.Info("startup-cli status " + StartupService.StatusLine());
+            return status.Enabled && status.Problem.Length == 0 ? 0 : 1;
         }
 
         private static int DataInfo(string reportPath)

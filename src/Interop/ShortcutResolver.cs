@@ -99,5 +99,35 @@ namespace DeskOrder.Interop
             ShortcutInfo info = Resolve(path);
             return info != null && !string.IsNullOrEmpty(info.TargetPath) ? info.TargetPath : path;
         }
+
+        /// <summary>
+        /// Writes a .lnk. Used for the Startup-folder autostart fallback, which works when
+        /// the registry Run key is unavailable.
+        /// </summary>
+        public static bool Create(string shortcutPath, string targetPath, string arguments, string workingDirectory)
+        {
+            if (string.IsNullOrEmpty(shortcutPath) || string.IsNullOrEmpty(targetPath)) return false;
+            object obj = null;
+            try
+            {
+                string dir = Path.GetDirectoryName(shortcutPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                obj = new ShellLinkCoClass();
+                var link = (IShellLinkW)obj;
+                var file = (IPersistFile)obj;
+                link.SetPath(targetPath);
+                if (!string.IsNullOrEmpty(arguments)) link.SetArguments(arguments);
+                if (!string.IsNullOrEmpty(workingDirectory)) link.SetWorkingDirectory(workingDirectory);
+                link.SetIconLocation(targetPath, 0);
+                link.SetDescription("DeskOrder");
+                file.Save(shortcutPath, true);
+                return File.Exists(shortcutPath);
+            }
+            catch { return false; }
+            finally
+            {
+                if (obj != null) Marshal.ReleaseComObject(obj);
+            }
+        }
     }
 }
